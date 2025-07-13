@@ -104,6 +104,10 @@ impl App {
             if self.app_state == AppState::Typing {
                 self.timer = self.start_time.elapsed().unwrap().as_secs();
             }
+            if self.timer >= 30 {
+                self.timer = 30;
+                self.app_state = AppState::Ended;
+            }
         }
         Ok(())
     }
@@ -128,13 +132,14 @@ impl App {
         match (key_event.code, key_event.modifiers) {
             (KeyCode::Char('c'), KeyModifiers::CONTROL) => self.exit(),
             (KeyCode::Esc, KeyModifiers::NONE) => self.exit(),
-
+            (KeyCode::Char('r'), KeyModifiers::CONTROL) => self.restart(),
             (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
                 if self.cursor_index == self.task_string.len() {
                     self.app_state = AppState::Ended;
                 }
 
                 if self.app_state == AppState::NotTyping {
+                    self.start_time = SystemTime::now();
                     self.app_state = AppState::Typing;
                 }
 
@@ -188,20 +193,65 @@ impl App {
     fn exit(&mut self) {
         self.exit = true;
     }
+
+    fn restart(&mut self) {
+        self.app_state = AppState::NotTyping;
+        self.cursor_index = 0;
+        self.task_string = get_task_string();
+        self.user_string = String::new();
+        self.words_typed = 0;
+        self.error_count = 0;
+        self.timer = 0;
+    }
 }
 
 impl Widget for &App {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let title = Line::from(" TYPER TUI ".bold());
-        let instructions = Line::from(vec![" Quit Esc or CLTR + ".into(), "<C> ".blue().bold()]);
+        let max_width = 62;
+        let centered_width = area.width.min(max_width);
+        let x_offset = (area.width.saturating_sub(centered_width)) / 2;
+
+        let centered_area = Rect {
+            x: area.x + x_offset,
+            y: area.y,
+            width: centered_width,
+            height: area.height,
+        };
+
+        let title = Line::from(" ████████╗██╗   ██╗██████╗ ███████╗██████╗  ".bold());
+        let title2 = Line::from(" ╚══██╔══╝╚██╗ ██╔╝██╔══██╗██╔════╝██╔══██╗ ".bold());
+        let title3 = Line::from("    ██║    ╚████╔╝ ██████╔╝█████╗  ██████╔╝ ".bold());
+        let title4 = Line::from("    ██║     ╚██╔╝  ██╔═══╝ ██╔══╝  ██╔══██╗ ".bold());
+        let title5 = Line::from("    ██║      ██║   ██║     ███████╗██║  ██║ ".bold());
+        let title6 = Line::from("    ╚═╝      ╚═╝   ╚═╝     ╚══════╝╚═╝  ╚═╝ ".bold());
+
+        let instructions = Line::from(vec![" [Esc] Quit ".into(), " [Ctrl+R] Restart ".into()]);
 
         let block = Block::bordered()
-            .title(title.centered())
             .title_bottom(instructions.centered())
             .border_set(border::THICK);
 
-        let inner_area = block.inner(area);
+        let inner_area = block.inner(centered_area);
         block.render(area, buf);
+
+        let title_area = Rect {
+            x: inner_area.x,
+            y: inner_area.y,
+            width: inner_area.width,
+            height: 6,
+        };
+
+        let title_lines = vec![title, title2, title3, title4, title5, title6];
+        Paragraph::new(title_lines)
+            .centered()
+            .render(title_area, buf);
+
+        let content_area = Rect {
+            x: inner_area.x,
+            y: inner_area.y + 7,
+            width: inner_area.width,
+            height: inner_area.height.saturating_sub(7),
+        };
 
         let mut task_string_styled = Vec::new();
         for (i, task_char) in self.task_string.chars().enumerate() {
@@ -220,38 +270,53 @@ impl Widget for &App {
             task_string_styled.push(styled_char);
         }
 
-        let task_string = Line::from(task_string_styled);
-        let timer_line = Line::from(vec![
-            Span::from("Time: "),
-            Span::from(self.timer.to_string()).yellow().bold(),
+        let minutes = self.timer as f64 / 60.0;
+        let wpm = if minutes > 0.0 && self.app_state != AppState::NotTyping {
+            (self.words_typed as f64 / minutes) as u32
+        } else {
+            0
+        };
+
+        let accuracy = if self.cursor_index > 0 {
+            let correct_chars = self.cursor_index.saturating_sub(self.error_count as usize);
+            ((correct_chars as f64 / self.cursor_index as f64) * 100.0) as u32
+        } else {
+            100
+        };
+
+        let timer_display = format!("{:02}/30", self.timer);
+
+        let stats_line = Line::from(vec![
+            Span::from("  ⏱  "),
+            Span::from(timer_display).yellow().bold(),
+            Span::from("     ⚡ "),
+            Span::from(wpm.to_string()).cyan().bold(),
+            Span::from(" WPM     ✓ "),
+            Span::from(format!("{}%", accuracy)).green().bold(),
         ]);
 
-        let mut display_lines = vec![task_string, timer_line];
+        let mut display_lines = vec![
+            Line::from(""),
+            Line::from(task_string_styled),
+            Line::from(""),
+            Line::from("  ─".repeat(20)), // separator
+            stats_line,
+            Line::from(""),
+        ];
+
         if self.app_state == AppState::Ended {
-            let error_line = Line::from(vec![
+            let final_stats = Line::from(vec![
+                Span::from("  Final Results - "),
                 Span::from("Errors: "),
                 Span::from(self.error_count.to_string()).red().bold(),
-            ]);
-            let words_typed_line = Line::from(vec![
-                Span::from("Words typed: "),
+                Span::from("  Words: "),
                 Span::from(self.words_typed.to_string()).green().bold(),
             ]);
-            display_lines.push(error_line);
-            display_lines.push(words_typed_line);
-
-            if self.timer > 0 {
-                let wpm = (self.words_typed as f64 / self.timer as f64) * 60.0;
-                let wpm_line = Line::from(vec![
-                    Span::from("WPM: "),
-                    Span::from(format!("{:.1}", wpm)).cyan().bold(),
-                ]);
-                display_lines.push(wpm_line);
-            }
+            display_lines.push(final_stats);
         }
 
         Paragraph::new(display_lines)
             .wrap(Wrap { trim: true })
-            .centered()
-            .render(inner_area, buf);
+            .render(content_area, buf);
     }
 }
