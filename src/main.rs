@@ -35,6 +35,9 @@ pub struct App {
     start_time: SystemTime,
     timer: u64,
     exit: bool,
+    sentences: Vec<String>,
+    current_sentence_index: usize,
+    sentence_cursor_index: usize,
 }
 
 #[derive(PartialEq, Eq)]
@@ -45,7 +48,7 @@ pub enum AppState {
     Ended,
 }
 
-fn get_task_string() -> String {
+fn get_task_string() -> (String, Vec<String>) {
     let file_path = Path::new("src/word.txt");
 
     let mut file_object = match File::open(&file_path) {
@@ -65,11 +68,8 @@ fn get_task_string() -> String {
     let mut shuffled_words = word_vec.clone();
     shuffled_words.shuffle(&mut rng);
 
-    // println!("word vec length: {:?}", word_vec.len());
-
     let mut result = String::new();
     for _ in 0..255 {
-        // no one is using this typer, and will have more than 300 words per minute speed
         let random_index = rand::random_range(0..word_vec.len());
         let word = word_vec[random_index].trim();
         if word.len() == 0 {
@@ -79,13 +79,39 @@ fn get_task_string() -> String {
         result.push(' ');
     }
 
-    result
+    // Split into sentences
+    let words: Vec<&str> = result.split_whitespace().collect();
+    let mut sentences = Vec::new();
+    let mut current_sentence = String::new();
+    let mut word_count = 0;
+
+    for word in words {
+        if !current_sentence.is_empty() {
+            current_sentence.push(' ');
+        }
+        current_sentence.push_str(word);
+        word_count += 1;
+
+        // Create a sentence every 10-15 words
+        if word_count >= 10 + (rand::random_range(0..6)) {
+            sentences.push(current_sentence.clone());
+            current_sentence.clear();
+            word_count = 0;
+        }
+    }
+
+    if !current_sentence.is_empty() {
+        sentences.push(current_sentence);
+    }
+
+    (result, sentences)
 }
 
 impl App {
     pub fn new() -> Self {
+        let (task_string, sentences) = get_task_string();
         Self {
-            task_string: get_task_string(),
+            task_string,
             user_string: String::new(),
             app_state: AppState::NotTyping,
             cursor_index: 0,
@@ -94,6 +120,9 @@ impl App {
             timer: 0,
             start_time: SystemTime::now(),
             exit: false,
+            sentences,
+            current_sentence_index: 0,
+            sentence_cursor_index: 0,
         }
     }
 
@@ -134,8 +163,9 @@ impl App {
             (KeyCode::Esc, KeyModifiers::NONE) => self.exit(),
             (KeyCode::Char('r'), KeyModifiers::CONTROL) => self.restart(),
             (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
-                if self.cursor_index == self.task_string.len() {
+                if self.current_sentence_index >= self.sentences.len() {
                     self.app_state = AppState::Ended;
+                    return;
                 }
 
                 if self.app_state == AppState::NotTyping {
@@ -143,28 +173,20 @@ impl App {
                     self.app_state = AppState::Typing;
                 }
 
-                let expected_char = self
-                    .task_string
-                    .chars()
-                    .nth(self.cursor_index)
-                    .unwrap_or_default();
+                let expected_char = self.get_current_sentence_char().unwrap_or_default();
 
                 if expected_char != c && self.app_state == AppState::Typing {
                     self.error_count += 1;
                     if expected_char != ' ' && c == ' ' {
                         // skipping the word logic
-                        let slice = self
-                            .task_string
-                            .get(self.cursor_index..)
-                            .and_then(|s| s.find(' '));
-
-                        let mut spaces_to_add =
-                            self.task_string.len().saturating_sub(self.cursor_index);
-                        if let Some(spaces) = slice {
-                            spaces_to_add = spaces;
+                        let current_sentence = &self.sentences[self.current_sentence_index];
+                        let remaining_chars = &current_sentence[self.sentence_cursor_index..];
+                        if let Some(space_pos) = remaining_chars.find(' ') {
+                            let spaces_to_add = space_pos;
+                            self.user_string.push_str(&" ".repeat(spaces_to_add));
+                            self.sentence_cursor_index += spaces_to_add;
+                            self.cursor_index += spaces_to_add;
                         }
-                        self.user_string.push_str(&" ".repeat(spaces_to_add));
-                        self.cursor_index += spaces_to_add;
                     }
                 }
 
@@ -173,7 +195,13 @@ impl App {
                         self.words_typed += 1;
                     }
                     self.user_string.push(c);
+                    self.sentence_cursor_index += 1;
                     self.cursor_index += 1;
+
+                    // Check if current sentence is complete
+                    if self.is_current_sentence_complete() {
+                        self.advance_to_next_sentence();
+                    }
                 }
             }
 
@@ -184,6 +212,9 @@ impl App {
                 {
                     self.user_string.pop();
                     self.cursor_index -= 1;
+                    if self.sentence_cursor_index > 0 {
+                        self.sentence_cursor_index -= 1;
+                    }
                 }
             }
             _ => {}
@@ -195,13 +226,54 @@ impl App {
     }
 
     fn restart(&mut self) {
+        let (task_string, sentences) = get_task_string();
         self.app_state = AppState::NotTyping;
         self.cursor_index = 0;
-        self.task_string = get_task_string();
+        self.task_string = task_string;
+        self.sentences = sentences;
         self.user_string = String::new();
         self.words_typed = 0;
         self.error_count = 0;
         self.timer = 0;
+        self.current_sentence_index = 0;
+        self.sentence_cursor_index = 0;
+    }
+
+    fn get_visible_sentences(&self) -> String {
+        let start_idx = self.current_sentence_index;
+        let end_idx = (start_idx + 3).min(self.sentences.len());
+
+        if start_idx >= self.sentences.len() {
+            return String::new();
+        }
+
+        self.sentences[start_idx..end_idx].join(" ")
+    }
+
+    fn get_current_sentence_char(&self) -> Option<char> {
+        if self.current_sentence_index >= self.sentences.len() {
+            return None;
+        }
+
+        let current_sentence = &self.sentences[self.current_sentence_index];
+        current_sentence.chars().nth(self.sentence_cursor_index)
+    }
+
+    fn advance_to_next_sentence(&mut self) {
+        self.current_sentence_index += 1;
+        self.sentence_cursor_index = 0;
+
+        self.user_string.clear();
+        self.cursor_index = 0;
+    }
+
+    fn is_current_sentence_complete(&self) -> bool {
+        if self.current_sentence_index >= self.sentences.len() {
+            return true;
+        }
+
+        let current_sentence = &self.sentences[self.current_sentence_index];
+        self.sentence_cursor_index >= current_sentence.len()
     }
 }
 
@@ -254,7 +326,9 @@ impl Widget for &App {
         };
 
         let mut task_string_styled = Vec::new();
-        for (i, task_char) in self.task_string.chars().enumerate() {
+        let visible_text = self.get_visible_sentences();
+
+        for (i, task_char) in visible_text.chars().enumerate() {
             let styled_char = if i < self.user_string.len() {
                 let user_char = self.user_string.chars().nth(i).unwrap();
                 if task_char == user_char {
@@ -285,6 +359,9 @@ impl Widget for &App {
         };
 
         let timer_display = format!("{:02}/30", self.timer);
+        let sentence_progress = format!("Line {}/{}",
+            self.current_sentence_index + 1,
+            self.sentences.len().min(self.current_sentence_index + 3));
 
         let stats_line = Line::from(vec![
             Span::from("  ⏱  "),
@@ -293,6 +370,8 @@ impl Widget for &App {
             Span::from(wpm.to_string()).cyan().bold(),
             Span::from(" WPM     ✓ "),
             Span::from(format!("{}%", accuracy)).green().bold(),
+            Span::from("     📄 "),
+            Span::from(sentence_progress).blue().bold(),
         ]);
 
         let mut display_lines = vec![
