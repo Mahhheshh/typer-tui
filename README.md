@@ -2,7 +2,7 @@
 
 A fast, minimalist terminal-based typing speed test application built with Rust and Ratatui.
 
-![Preview](preview/preview.png)
+![Preview](preview/preview.gif)
 
 ## Features
 
